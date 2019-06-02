@@ -1,3 +1,6 @@
+#ifndef HOMEALARMIOSIMULATORVXWORKSDRV_H
+#define HOMEALARMIOSIMULATORVXWORKSDRV_H
+
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -17,10 +20,11 @@
 
 using std::string;
 
-#define HOST_IP "192.168.0.10"
+#define HOST_IP "192.168.0.30"
 #define HOST_PORT 1314
 
 #define RECV_BUFF_SIZE 64
+#define SEND_BUFF_SIZE 64
 
 enum DeviceType
 {
@@ -104,6 +108,8 @@ public:
     string deviceValue() const;
     void setDeviceValue(const string &deviceValue);
 
+    string toCMDString() const;
+
 private:
     static string startDelimiter_;
     static string stopDelimiter_;
@@ -169,10 +175,24 @@ void CMD::setDeviceValue(const string &deviceValue)
     this->deviceValue_ = deviceValue;
 }
 
+// transform CMD to CMD string which can be transfer by socket
+string CMD::toCMDString() const
+{
+    char cmdBuff[SEND_BUFF_SIZE];
+    memset(cmdBuff, '\0', sizeof(cmdBuff));
+    sprintf(cmdBuff, "%s%d %d %s%s",
+            CMD::startDelimiter_.c_str(),
+            this->deviceType_,
+            this->deviceId_,
+            this->deviceValue_.c_str(),
+            CMD::stopDelimiter_.c_str());
+    return cmdBuff;
+}
+
 class HomeAlarmIOBase
 {
 public:
-    HomeAlarmIOBase(const string &hostIP, int hostPort = HOST_PORT);
+    HomeAlarmIOBase(const string &hostIP = HOST_IP, int hostPort = HOST_PORT);
     virtual ~HomeAlarmIOBase();
 
     string hostIP() const;
@@ -192,6 +212,11 @@ public:
     virtual void onSwitchSensor(int sensorId, int switchValue);
     virtual void onDigitSensor(int sensorId, double digitValue);
 
+    // set functions.
+    STATUS setLight(int LightId, int switchValue);
+    STATUS setLED(int LEDId, int switchValue);
+    STATUS setCall(const string &callNum, const string &callType, const string &callArea);
+
 private:
     string hostIP_;
     int hostPort_;
@@ -206,6 +231,7 @@ HomeAlarmIOBase::HomeAlarmIOBase(const string &hostIP, int hostPort) : hostIP_(h
 
 HomeAlarmIOBase::~HomeAlarmIOBase()
 {
+    close(this->clientSock_);
 }
 
 string HomeAlarmIOBase::hostIP() const
@@ -237,23 +263,78 @@ void HomeAlarmIOBase::setClientSock(int clientSock)
 
 void HomeAlarmIOBase::onArm()
 {
-    printf("onArm\n");
+    // printf("onArm\n");
 }
 void HomeAlarmIOBase::onDisarm()
 {
-    printf("onDisarm\n");
+    // printf("onDisarm\n");
 }
 void HomeAlarmIOBase::onKey(int keyId)
 {
-    printf("onKey(%d)\n", keyId);
+    // printf("onKey(%d)\n", keyId);
 }
 void HomeAlarmIOBase::onSwitchSensor(int sensorId, int switchValue)
 {
-    printf("onSwitchSensor(%d, %d)\n", sensorId, switchValue);
+    // printf("onSwitchSensor(%d, %d)\n", sensorId, switchValue);
 }
 void HomeAlarmIOBase::onDigitSensor(int sensorId, double digitValue)
 {
-    printf("onDigitSensor(%d, %f)\n", sensorId, digitValue);
+    // printf("onDigitSensor(%d, %f)\n", sensorId, digitValue);
+}
+
+// forward declaration
+STATUS sendCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO);
+
+STATUS HomeAlarmIOBase::setLight(int lightId, int switchValue)
+{
+    CMD cmd(SwitchType, lightId);
+    if (switchValue == Off)
+        cmd.setDeviceValue("0");
+    else if (switchValue == On)
+        cmd.setDeviceValue("1");
+    else
+        cmd.setDeviceValue("2");
+    return sendCMD(cmd.toCMDString(), this);
+}
+
+STATUS HomeAlarmIOBase::setLED(int LEDId, int switchValue)
+{
+    CMD cmd(SwitchType, LEDId);
+    if (switchValue == Off)
+        cmd.setDeviceValue("0");
+    else if (switchValue == On)
+        cmd.setDeviceValue("1");
+    else
+        cmd.setDeviceValue("2");
+    return sendCMD(cmd.toCMDString(), this);
+}
+
+STATUS HomeAlarmIOBase::setCall(const string &phoneNum, const string &phoneType, const string &phoneArea)
+{
+    CMD cmdNum(StringType, PhoneNum, phoneNum);
+    if (sendCMD(cmdNum.toCMDString(), this) == ERROR)
+        return ERROR;
+    CMD cmdType(StringType, PhoneType, phoneType);
+    if (sendCMD(cmdType.toCMDString(), this) == ERROR)
+        return ERROR;
+    CMD cmdArea(StringType, PhoneArea, phoneArea);
+    return sendCMD(cmdArea.toCMDString(), this);
+}
+
+// send CMD string to the simulator
+STATUS sendCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
+{
+    if (homeAlarmIO->clientSock() == ERROR)
+        return ERROR;
+
+    int sendBytesNum;
+    if ((sendBytesNum = send(homeAlarmIO->clientSock(), cmdString.c_str(), cmdString.size(), 0)) != ERROR)
+    {
+        // printf("send %s successed\n", cmdString.c_str());
+        return OK;
+    }
+
+    return ERROR;
 }
 
 STATUS processCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
@@ -369,12 +450,10 @@ STATUS recvCMD(HomeAlarmIOBase *homeAlarmIO)
 STATUS startIOSimulator(HomeAlarmIOBase *homeAlarmIO)
 {
     struct sockaddr_in serverAddr; // server's address
-    struct sockaddr_in clientAddr; // client's address
 
     // Zero out the sock_addr structures.
     // This MUST be done before the socket call.
     bzero((char *)&serverAddr, sizeof(serverAddr));
-    bzero((char *)&clientAddr, sizeof(clientAddr));
 
     // Open the socket.
     // Use ARPA Internet address format and stream sockets.
@@ -396,7 +475,7 @@ STATUS startIOSimulator(HomeAlarmIOBase *homeAlarmIO)
         close(clientSock);
         return ERROR;
     }
-    printf("Server's address is %x:\n", htonl(serverAddr.sin_addr.s_addr));
+    printf("Server's address is %x\n", htonl(serverAddr.sin_addr.s_addr));
 
     // connect to host
     if (connect(clientSock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == ERROR)
@@ -412,12 +491,14 @@ STATUS startIOSimulator(HomeAlarmIOBase *homeAlarmIO)
     recvCMD(homeAlarmIO);
 }
 
-STATUS main()
-{
-    HomeAlarmIOBase app(HOST_IP);
-    // call this function will block this task.
-    // because there is a loop for listening CMD from host.
-    startIOSimulator(&app);
+// STATUS main()
+// {
+//     HomeAlarmIOBase app();
+//     // call this function will block this task.
+//     // because there is a loop for listening CMD from host.
+//     startIOSimulator(&app);
 
-    return OK;
-}
+//     return OK;
+// }
+
+#endif
