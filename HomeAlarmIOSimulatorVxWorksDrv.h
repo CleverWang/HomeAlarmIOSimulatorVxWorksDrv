@@ -204,6 +204,9 @@ public:
     int clientSock() const;
     void setClientSock(int clientSock);
 
+    // start function
+    void startIOSimulator();
+
     // callback functions.
     // can be override in derived classes.
     virtual void onArm();
@@ -218,6 +221,12 @@ public:
     STATUS setCall(const string &callNum, const string &callType, const string &callArea);
 
 private:
+    STATUS sendCMD(const string &cmdString);
+    void recvCMD();
+    STATUS processCMD(const string &cmdString);
+
+    int str2int(const string &str, int start, int stop);
+
     string hostIP_;
     int hostPort_;
     int clientSock_; // socket opened to server
@@ -231,7 +240,8 @@ HomeAlarmIOBase::HomeAlarmIOBase(const string &hostIP, int hostPort) : hostIP_(h
 
 HomeAlarmIOBase::~HomeAlarmIOBase()
 {
-    close(this->clientSock_);
+    if (this->clientSock_ != ERROR)
+        close(this->clientSock_);
 }
 
 string HomeAlarmIOBase::hostIP() const
@@ -282,9 +292,6 @@ void HomeAlarmIOBase::onDigitSensor(int sensorId, double digitValue)
     // printf("onDigitSensor(%d, %f)\n", sensorId, digitValue);
 }
 
-// forward declaration
-STATUS sendCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO);
-
 STATUS HomeAlarmIOBase::setLight(int lightId, int switchValue)
 {
     CMD cmd(SwitchType, lightId);
@@ -294,7 +301,7 @@ STATUS HomeAlarmIOBase::setLight(int lightId, int switchValue)
         cmd.setDeviceValue("1");
     else
         cmd.setDeviceValue("2");
-    return sendCMD(cmd.toCMDString(), this);
+    return this->sendCMD(cmd.toCMDString());
 }
 
 STATUS HomeAlarmIOBase::setLED(int LEDId, int switchValue)
@@ -306,29 +313,29 @@ STATUS HomeAlarmIOBase::setLED(int LEDId, int switchValue)
         cmd.setDeviceValue("1");
     else
         cmd.setDeviceValue("2");
-    return sendCMD(cmd.toCMDString(), this);
+    return this->sendCMD(cmd.toCMDString());
 }
 
 STATUS HomeAlarmIOBase::setCall(const string &phoneNum, const string &phoneType, const string &phoneArea)
 {
     CMD cmdNum(StringType, PhoneNum, phoneNum);
-    if (sendCMD(cmdNum.toCMDString(), this) == ERROR)
+    if (this->sendCMD(cmdNum.toCMDString()) == ERROR)
         return ERROR;
     CMD cmdType(StringType, PhoneType, phoneType);
-    if (sendCMD(cmdType.toCMDString(), this) == ERROR)
+    if (this->sendCMD(cmdType.toCMDString()) == ERROR)
         return ERROR;
     CMD cmdArea(StringType, PhoneArea, phoneArea);
-    return sendCMD(cmdArea.toCMDString(), this);
+    return this->sendCMD(cmdArea.toCMDString());
 }
 
 // send CMD string to the simulator
-STATUS sendCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
+STATUS HomeAlarmIOBase::sendCMD(const string &cmdString)
 {
-    if (homeAlarmIO->clientSock() == ERROR)
+    if (this->clientSock_ == ERROR)
         return ERROR;
 
     int sendBytesNum;
-    if ((sendBytesNum = send(homeAlarmIO->clientSock(), cmdString.c_str(), cmdString.size(), 0)) != ERROR)
+    if ((sendBytesNum = send(this->clientSock_, cmdString.c_str(), cmdString.size(), 0)) != ERROR)
     {
         // printf("send %s successed\n", cmdString.c_str());
         return OK;
@@ -337,7 +344,17 @@ STATUS sendCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
     return ERROR;
 }
 
-STATUS processCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
+int HomeAlarmIOBase::str2int(const string &str, int start, int stop)
+{
+    int res = 0;
+    for (int i = start; i <= stop; ++i)
+    {
+        res = res * 10 + (str[i] - '0');
+    }
+    return res;
+}
+
+STATUS HomeAlarmIOBase::processCMD(const string &cmdString)
 {
     int len = cmdString.size();
     if (len < 4)
@@ -345,7 +362,6 @@ STATUS processCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
 
     int deviceType;
     int deviceId;
-    string deviceValue;
 
     // extract device type
     int start = 0;
@@ -354,7 +370,7 @@ STATUS processCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
         ++i;
     if (i >= len)
         return ERROR;
-    sscanf(cmdString.substr(start, i - start).c_str(), "%d", &deviceType);
+    deviceType = this->str2int(cmdString, start, i - 1);
     ++i;
     if (i >= len)
         return ERROR;
@@ -365,33 +381,32 @@ STATUS processCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
         ++i;
     if (i >= len)
         return ERROR;
-    sscanf(cmdString.substr(start, i - start).c_str(), "%d", &deviceId);
+    deviceId = this->str2int(cmdString, start, i - 1);
     ++i;
 
     // extract device value
     start = i;
-    deviceValue = cmdString.substr(start);
 
     // call the callback functions according to device type
     switch (deviceType)
     {
     case KeyType:
         if (deviceId == KeyArm)
-            homeAlarmIO->onArm();
+            this->onArm();
         else if (deviceId == KeyDisarm)
-            homeAlarmIO->onDisarm();
+            this->onDisarm();
         else
-            homeAlarmIO->onKey(deviceId);
+            this->onKey(deviceId);
         break;
     case SwitchType:
         int switchValue;
-        sscanf(deviceValue.c_str(), "%d", &switchValue);
-        homeAlarmIO->onSwitchSensor(deviceId, switchValue);
+        sscanf(cmdString.c_str() + start, "%d", &switchValue);
+        this->onSwitchSensor(deviceId, switchValue);
         break;
     case DigitType:
         double digitValue;
-        sscanf(deviceValue.c_str(), "%lf", &digitValue);
-        homeAlarmIO->onDigitSensor(deviceId, digitValue);
+        sscanf(cmdString.c_str() + start, "%lf", &digitValue);
+        this->onDigitSensor(deviceId, digitValue);
         break;
     default:
         return ERROR;
@@ -400,19 +415,20 @@ STATUS processCMD(const string &cmdString, HomeAlarmIOBase *homeAlarmIO)
     return OK;
 }
 
-STATUS recvCMD(HomeAlarmIOBase *homeAlarmIO)
+void HomeAlarmIOBase::recvCMD()
 {
-    if (homeAlarmIO->clientSock() == ERROR)
-        return ERROR;
+    if (this->clientSock_ == ERROR)
+        return;
 
     char recvBuff[RECV_BUFF_SIZE];
     int recvBytesNum;
     string cmdBuff;
+    string cmdString;
     while (true)
     {
         memset(recvBuff, '\0', sizeof(recvBuff));
         // recv CMD string from host
-        if ((recvBytesNum = recv(homeAlarmIO->clientSock(), recvBuff, sizeof(recvBuff) - 1, 0)) != ERROR)
+        if ((recvBytesNum = recv(this->clientSock_, recvBuff, sizeof(recvBuff) - 1, 0)) != ERROR)
         {
             cmdBuff.append(recvBuff);
 
@@ -439,7 +455,11 @@ STATUS recvCMD(HomeAlarmIOBase *homeAlarmIO)
                 }
 
                 // extract one actual CMD string between CMD start delimiter and CMD stop delimiter
-                processCMD(cmdBuff.substr(start + startDelimiterSize, stop - start - startDelimiterSize), homeAlarmIO);
+                cmdString = cmdBuff.substr(start + startDelimiterSize, stop - start - startDelimiterSize);
+                if (this->processCMD(cmdString) == ERROR)
+                {
+                    printf("Invalid CMD string: %s", cmdString.c_str());
+                }
 
                 cmdBuff = cmdBuff.substr(stop + stopDelimiterSize);
             }
@@ -447,7 +467,7 @@ STATUS recvCMD(HomeAlarmIOBase *homeAlarmIO)
     }
 }
 
-STATUS startIOSimulator(HomeAlarmIOBase *homeAlarmIO)
+void HomeAlarmIOBase::startIOSimulator()
 {
     struct sockaddr_in serverAddr; // server's address
 
@@ -462,18 +482,18 @@ STATUS startIOSimulator(HomeAlarmIOBase *homeAlarmIO)
     if (clientSock == ERROR)
     {
         printf("Socket failed to open\n");
-        return ERROR;
+        return;
     }
 
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(homeAlarmIO->hostPort());
+    serverAddr.sin_port = htons(this->hostPort_);
     // get server's Internet address
-    if ((serverAddr.sin_addr.s_addr = inet_addr(const_cast<char *>(homeAlarmIO->hostIP().c_str()))) == ERROR &&
-        (serverAddr.sin_addr.s_addr = hostGetByName(const_cast<char *>(homeAlarmIO->hostIP().c_str()))) == ERROR)
+    if ((serverAddr.sin_addr.s_addr = inet_addr(const_cast<char *>(this->hostIP_.c_str()))) == ERROR &&
+        (serverAddr.sin_addr.s_addr = hostGetByName(const_cast<char *>(this->hostIP_.c_str()))) == ERROR)
     {
-        printf("Invalid host: \"%s\"\n", homeAlarmIO->hostIP().c_str());
+        printf("Invalid host: \"%s\"\n", this->hostIP_.c_str());
         close(clientSock);
-        return ERROR;
+        return;
     }
     printf("Server's address is %x\n", htonl(serverAddr.sin_addr.s_addr));
 
@@ -482,13 +502,13 @@ STATUS startIOSimulator(HomeAlarmIOBase *homeAlarmIO)
     {
         printf("Connection failed\n");
         close(clientSock);
-        return ERROR;
+        return;
     }
     printf("Connected\n");
 
-    homeAlarmIO->setClientSock(clientSock);
-    // taskSpawn("tCMDReceiver", 100, VX_FP_TASK, 20000, FUNCPTR(recvCMD), (int)homeAlarmIO, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    recvCMD(homeAlarmIO);
+    this->clientSock_ = clientSock;
+    // taskSpawn("tCMDReceiver", 100, VX_FP_TASK, 20000, FUNCPTR(recvCMD), (int)this, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    this->recvCMD();
 }
 
 // STATUS main()

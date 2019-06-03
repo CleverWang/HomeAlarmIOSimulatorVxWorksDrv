@@ -84,7 +84,7 @@ STATUS main()
     HomeAlarmApplication app;
     // call this function will block this task.
     // because there is a loop for listening CMD from host.
-    startIOSimulator(&app);
+    app.startIOSimulator();
 
     return OK;
 }
